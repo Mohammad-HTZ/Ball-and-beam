@@ -1,0 +1,189 @@
+#include <ESP32Servo.h>
+#include <algorithm> 
+
+// Pins & Constants
+const int trigPin = 12;
+const int echoPin = 14;
+const int POT_PIN = 34;
+const int SERVO_PIN = 27;
+const int LED_PIN = 13; // LED pin
+#define SOUND_SPEED 0.034
+const int SERVO_MIN = 0;
+const int SERVO_MAX = 155;
+const int STUCK_TIME_MS = 1000;
+const float DISTANCE_NOISE_THRESH = 1.0;
+const double ERROR_THRESHOLD = 1.0; // ±1.0 cm error = stable
+const unsigned long STABLE_TIME_MS = 1000; // 1 seconds
+
+// Servo Jolt Parameters
+const int JOLT_ANGLE = 40;
+const int JOLT_DURATION = 300;
+
+// Global Variables
+Servo beamServo;
+double filteredSetpoint = 33.0;
+double setpoint_n = filteredSetpoint;
+double Kp = 4, Ki = 0.12, Kd = 5;
+double integral = 0, lastError = 0;
+int distanceBuffer[7];
+int bufferIndex = 0;
+
+// Stuck & Stability Detection
+float lastDistance = 0;
+unsigned long lastMovementTime = 0;
+bool isStuck = false;
+unsigned long stuckStartTime = 0;
+bool isStable = false;
+unsigned long stableStartTime = 0;
+
+void setup() {
+  Serial.begin(115200);
+  pinMode(trigPin, OUTPUT);
+  pinMode(echoPin, INPUT);
+  pinMode(POT_PIN, INPUT);
+  pinMode(LED_PIN, OUTPUT);
+  digitalWrite(LED_PIN, LOW);
+  beamServo.attach(SERVO_PIN);
+}
+
+void loop() {
+  updateSetpoint();
+
+  // Read distance
+  digitalWrite(trigPin, LOW);
+  delayMicroseconds(2);
+  digitalWrite(trigPin, HIGH);
+  delayMicroseconds(10);
+  digitalWrite(trigPin, LOW);
+  long duration = pulseIn(echoPin, HIGH);
+  int distanceCm = duration * SOUND_SPEED / 2;
+
+  // Median filter
+  distanceBuffer[bufferIndex] = distanceCm;
+  bufferIndex = (bufferIndex + 1) % 7;
+  int tempBuffer[7];
+  memcpy(tempBuffer, distanceBuffer, sizeof(tempBuffer));
+  std::sort(tempBuffer, tempBuffer + 7);
+  float filteredDistance = tempBuffer[3];
+  float filter_n= filteredDistance;
+
+  // ---------------------- Stability Check ----------------------
+  double currentError = filteredSetpoint - filteredDistance;
+  if (abs(currentError) < ERROR_THRESHOLD) {
+    if (!isStable) {
+      stableStartTime = millis();
+      isStable = true;
+    } else if (millis() - stableStartTime >= STABLE_TIME_MS) {
+      digitalWrite(LED_PIN, HIGH); // LED ON
+      while(abs(setpoint_n - filteredSetpoint)<0.5 && abs(filter_n - filteredSetpoint) <=1 ){
+        int potValue = analogRead(POT_PIN);
+        double rawSetpoint = map(potValue, 0, 4095, -3, 41);
+        filteredSetpoint = 0.9 * filteredSetpoint + 0.1 * rawSetpoint;
+        filteredSetpoint = round(filteredSetpoint);
+        digitalWrite(trigPin, LOW);
+        delayMicroseconds(2);
+        digitalWrite(trigPin, HIGH);
+        delayMicroseconds(10);
+        digitalWrite(trigPin, LOW);
+        duration = pulseIn(echoPin, HIGH);
+        distanceCm = duration * SOUND_SPEED / 2;
+        // Median filter
+        distanceBuffer[bufferIndex] = distanceCm;
+        bufferIndex = (bufferIndex + 1) % 7;
+         tempBuffer[7];
+        memcpy(tempBuffer, distanceBuffer, sizeof(tempBuffer));
+        std::sort(tempBuffer, tempBuffer + 7);
+        filter_n = tempBuffer[3];
+        beamServo.write(70);
+        delay(50);
+        Serial.print("Setpoint: ");
+        Serial.print(filteredSetpoint);
+        Serial.print(" | Distance: ");
+        Serial.print(filter_n);
+        Serial.print(" | Servo: ");
+        Serial.print(beamServo.read());
+        Serial.print(" | Stuck: ");
+        Serial.print(isStuck ? "YES" : "NO");
+        Serial.print(" | Stable: ");
+        Serial.println(isStable ? "YES" : "NO");
+        delay(50);
+
+
+      }
+    }
+  } else {
+    isStable = false;
+    digitalWrite(LED_PIN, LOW); // LED OFF
+  }
+
+  // ---------------------- Stuck Detection ----------------------
+  float distanceChange = abs(filteredDistance - lastDistance);
+  int currentAngle = beamServo.read();
+  if ((currentAngle <= SERVO_MIN + 5 || currentAngle >= SERVO_MAX - 5) && 
+      distanceChange < DISTANCE_NOISE_THRESH) {
+    if (!isStuck) {
+      isStuck = true;
+      stuckStartTime = millis();
+    } else if (millis() - stuckStartTime > STUCK_TIME_MS) {
+      performJolt();
+      isStuck = false;
+    }
+  } else {
+    isStuck = false;
+  }
+  lastDistance = filteredDistance;
+
+  // PID Control
+  if (!isStuck) {
+    double error = filteredSetpoint - filteredDistance;
+    integral += error;
+    double derivative = error - lastError;
+    lastError = error;
+    integral = constrain(integral, -600, 600);
+    double computedPID = (Kp * error) + (Ki * integral) + (Kd * derivative);
+    computedPID = constrain(computedPID, -50, 50);
+    int servoAngle = map(computedPID, -50, 50, SERVO_MAX, SERVO_MIN);
+    servoAngle = constrain(servoAngle, SERVO_MIN, SERVO_MAX);
+    beamServo.write(servoAngle);
+  }
+
+  // Debugging
+  Serial.print("Setpoint: ");
+  Serial.print(filteredSetpoint);
+  Serial.print(" | Distance: ");
+  Serial.print(filteredDistance);
+  Serial.print(" | Servo: ");
+  Serial.print(beamServo.read());
+  Serial.print(" | Stuck: ");
+  Serial.print(isStuck ? "YES" : "NO");
+  Serial.print(" | Stable: ");
+  Serial.println(isStable ? "YES" : "NO");
+  //Serial.println(setpoint_n);
+  //Serial.println(filter_n);
+  delay(50);
+}
+
+// ... (keep existing updateSetpoint() and performJolt() functions)
+void updateSetpoint() {
+  static unsigned long lastUpdate = 0;
+  if (millis() - lastUpdate > 100) {
+    int potValue = analogRead(POT_PIN);
+     
+    double rawSetpoint = map(potValue, 0, 4095, -3, 41);
+    filteredSetpoint = 0.9 * filteredSetpoint + 0.1 * rawSetpoint;
+    filteredSetpoint = round(filteredSetpoint);
+    setpoint_n = filteredSetpoint;
+    lastUpdate = millis();
+  }
+}
+
+// Jolt the servo to unstick the cart
+void performJolt() {
+  int currentAngle = beamServo.read();
+  int joltTarget = currentAngle + JOLT_ANGLE; // Reverse direction
+  joltTarget = constrain(joltTarget, SERVO_MIN, SERVO_MAX);
+  
+  beamServo.write(joltTarget);
+  delay(JOLT_DURATION);
+  beamServo.write(currentAngle); // Return to original position
+}
