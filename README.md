@@ -31,3 +31,6 @@ This project implements a Ball and Beam control system using an ESP32 microcontr
   ### Monitoring and Testing:
   - Use the Serial Monitor (set to 115200 baud) to view sensor readings, system status (stability and stuck detection), and servo commands.
   - Adjust the potentiometer to change the setpoint and observe the PID control action.
+![photo_2025-02-05_10-41-52](https://github.com/user-attachments/assets/eefa5a34-93ce-4fb8-8270-451abd8edcac)
+![image_2025-01-31_06-47-55](https://github.com/user-attachments/assets/96f6db8f-9723-4892-8a4e-bf7f00c2569d)
+![photo_2025-02-05_10-48-12](https://github.com/user-attachments/assets/222691ff-7aaf-4fe6-b66a-9b0f3237405f)
